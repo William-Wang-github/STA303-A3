@@ -1,0 +1,320 @@
+---
+title: "STA303 A3"
+author: "William Wang"
+output: 
+  pdf_document:
+    toc: TRUE
+    fig_width: 4.25
+    fig_height: 3.25
+  html_document:
+    toc: TRUE
+    fig_width: 3
+    fig_height: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup Code
+```{r, warning=FALSE, results='hide', message=FALSE, eval=FALSE}
+
+install.packages("lme4")
+install.packages("mgcv")
+install.packages("tidyverse")
+install.packages("Pmisc", repos = "http://R-Forge.R-project.org", type = "source")
+install.packages("lmtest")
+install.packages("devtools")
+install.packages("gamm4")
+install.packages("nadiv")
+```
+
+```{r, warning=FALSE, results='hide', message=FALSE}
+library(`tidyverse`)
+library(`Pmisc`)
+library(`mgcv`)
+library(`lme4`)
+library(`lmtest`)
+library(`gamm4`)
+library(`devtools`)
+library(`nadiv`)
+```
+
+# Question 1 - Birth
+**The story in the Globe and Mail titled “Fewer boys born in Ontario after Trump’s 2016 election win, study finds” at ** [www.theglobeandmail.com/canada/article-fewer-boys-born-in-ontario-after-trumps-2016-electionwin-study](https://www.theglobeandmail.com/canada/article-fewer-boys-born-in-ontario-after-trumps-2016-election-win-study/) **refers to the paper by Retnakaran and Ye (2020). The hypothesis being investigated is that following the election of Donald Trump the proportion of babies born who are male fell. Women in the early stages of pregnancy are susceptible to miscarriage or spontaneous abortion when put under stress, and for biological reasons male fetuses are more at risk than female fetuses. Retnakaran and Ye (2020) use birth data from Ontario, and found the reduction in male babies was more pronounced in liberal-voting areas of the province than conservative-voting areas. Births in March 2017, which would have been 3 or 4 months gestation at the time of the November 2016 election, are shown to be particularly affected by the results of the election.**
+**For testing the hypothesis that stress induced by Trump’s election is affecting the sex ratio at birth, the choice of Ontario as the study population by Retnakaran and Ye (2020) is an odd one. The dataset below considers was retrieved from wonder.cdc.gov, and contains monthly birth counts in the US for Hispanics and Non-Hispanic Whites, for rural and urban areas. Rural whites voted for Trump in large numbers, and would presumably not be stressed by the results of the election. Urban areas voted against Trump for the most part, and Americans of Hispanic origin had many reasons to be anxious following Trump’s election. 1 shows birth numbers and ratio of male to female births for rural Whites and urban Hispanics over time.**
+
+```{r}
+theFile = 'birthData.rds'
+if(!file.exists(theFile)) {
+download.file('http://pbrown.ca/teaching/303/data/birthData.rds', theFile)
+}
+x = readRDS(theFile)
+```
+
+**A Generalized Additive model was fit to these data by first defining some variables, and creating a ‘bygroup’ variable that’s a unique urban/hispanic indicator.**
+
+```{r}
+x$bygroup = factor(gsub("[[:space:]]", "", paste0(x$MetroNonmetro, x$MothersHispanicOrigin)))
+x$timeInt = as.numeric(x$time)
+x$y = as.matrix(x[,c('Male','Female')])
+x$sin12 = sin(x$timeInt/365.25)
+x$cos12 = cos(x$timeInt/365.25)
+x$sin6 = sin(2*x$timeInt/365.25)
+x$cos6 = cos(2*x$timeInt/365.25)
+baselineDate = as.Date('2007/1/1')
+baselineDateInt = as.integer(baselineDate)
+```
+
+The GAM model was fit as follows.
+
+```{r}
+res = mgcv::gam(y ~ bygroup + cos12 + sin12 + cos6 + sin6 + s(timeInt, by=bygroup, k = 120, pc=baselineDateInt), data=x, family=binomial(link='logit'))
+```
+
+A Generalized Linear Mixed Model was fit below.
+
+
+```{r}
+res2 = gamm4::gamm4(y ~ bygroup + cos12 + sin12 + cos6 + sin6 + s(timeInt, by=bygroup, k = 120, pc=baselineDateInt), 
+                    random = ~(1|bygroup:timeInt), 
+                    data=x, family=binomial(link='logit'))
+coefGamm = summary(res2$mer)$coef
+knitr::kable(cbind( 
+  mgcv::summary.gam(res)$p.table[,1:2],
+  coefGamm[grep("^Xs[(]", rownames(coefGamm), invert=TRUE), 1:2]), digits=5)
+1/sqrt(res$sp)
+lme4::VarCorr(res2$mer)
+```
+
+Predict seasonally adjusted time trend (birth ratio assuming every month is January), these are shown in Figure 2
+
+```{r}
+timeJan = as.numeric(as.Date('2010/1/1'))/365.25
+toPredict = expand.grid( 
+  timeInt = as.numeric(seq(as.Date('2007/1/1'), as.Date('2018/12/1'), by='1 day')), 
+  bygroup = c('MetroHispanicorLatino', 'NonmetroNotHispanicorLatino'), 
+  cos12 = cos(timeJan), sin12 = sin(timeJan), cos6 = cos(timeJan/2), sin6 = sin(timeJan/2)
+  )
+predictGam = mgcv::predict.gam(res, toPredict, se.fit=TRUE)
+predictGamm = predict(res2$gam, toPredict, se.fit=TRUE)
+```
+
+```{r gamAndGammPlot, fig.cap='Predicted time trends', fig.subcap =c('gam','gamm', 'gamm ind'), fig.ncol=2, out.width = Pmisc::out.width(0.45), echo=FALSE}
+
+Sx = as.Date(paste0(seq(1990,2025,by=2), '/1/1'))
+
+
+for(D in c('gam','gamm')) {
+	toPlot = which(thePred2$model == D)
+	matplot(thePred2[toPlot, 'timeInt'], thePred2[toPlot, 3:8],
+	type='l', lty=1, col=c('red','orange','orange','black','grey','grey'),
+	lwd = c(3,1,1,3,1,1),
+	ylim = c(1.025, 1.06), 
+	xaxt='n', xaxs='i',
+	xlab='time', ylab='')
+axis(1, as.numeric(Sx), format(Sx, '%Y'))
+legend('bottom', lty=1, lwd=2, bty='n', legend=unique(thePred$bygroup), col=c('red','black'))
+abline(v=as.Date('2017/3/1'))
+}
+
+
+```
+these are shown in @fig:gamAndGammPlot.
+
+```{r, echo = FALSE}
+theCiMat = Pmisc::ciMat()
+thePred = as.data.frame(exp(rbind(do.call(cbind,predictGam), do.call(cbind, predictGamm)) %*% theCiMat))
+thePred$model = rep(c('gam', 'gamm'), each=nrow(toPredict))
+thePred$index = rep(1:nrow(toPredict), 2)
+thePred = cbind(thePred, toPredict[thePred$index, c('timeInt','bygroup')])
+
+thePred2 = reshape2::dcast(
+	reshape2::melt(thePred, id.vars=c('timeInt','bygroup', 'model'), measure.vars = colnames(theCiMat)),
+	model + timeInt ~ bygroup + variable)
+```
+
+
+```{r}
+ranef2 = lme4::ranef(res2$mer, condVar=TRUE, whichel = 'bygroup:timeInt')
+ranef2a = exp(cbind(est=ranef2[[1]][[1]], se=sqrt(attributes(ranef2[[1]])$postVar)) %*% theCiMat)
+```
+These are shown in @fig:ranefIndPlot
+
+```{r ranefIndPlot, fig.cap = 'bygroup:timeInt random effects', fig.subcap = rownames(subMatrix), fig.ncol=2, fig.height=3, fig.width=5, out.width = Pmisc::out.width(0.48), echo=FALSE}
+ranef2b = cbind(as.data.frame(ranef2a), timeInt = as.numeric(gsub('.*[:]', '',rownames(ranef2[[1]]) )),
+	bygroup = gsub('[:].*', '',rownames(ranef2[[1]]) ))
+for(D in 1:nrow(subMatrix) ) {
+
+	toPlot = ranef2b[ranef2b$bygroup == rownames(subMatrix)[D],]
+	matplot(toPlot$timeInt, toPlot[,1:3], type='l', xaxt='n', xlab='time', ylab='count',
+		lty=c(1,2,2), col='black', xlim = as.numeric(as.Date(c('2014/1/1', '2019/1/1'))))
+	abline(v=Sbase)
+	axis(1, as.numeric(Stime), format(Stime, '%Y'))
+	abline(h=1, lty=3)
+}
+```
+
+## Part 1
+**1. Write down statistical models corresponding to res and res2**
+
+The statistical model corresponding to `res` is $log(\mu_{ij}) = \bf{X_{ij}}\beta + f(W_{ij}; v)$. Where our response variable, $Y_ij \sim Binomial(N_i,\mu)$, which is the number of male births and N is the total number of births, v is the smoothing parameter, i denotes the $i^{th}$ group and j is the $j^{th}$ individual in the group. The model also has a logit link function from the binomial family, as we have `family=binomial(link='logit')`. The $X_i \text{ and } W_i$ are covariates. For our X_i, we have covariates for the group the mother belongs in, `bygroup`, which indicates urbanity (Rural or Urban) and race of the mother (either Hispanic or not), as well as sinusoidal basis functions to capture seasonal effects of births, for both sine and cosine at 12 month and 6 month frequencies. The smooth function, denoted by $f(W_i)$, has `timeInt` as the covariate $W_i$ which is the time within the data since a certain date taken as a numeric, and also has the `by` set to the `bygroup` and 120 dimensions for the basis. This setting for `by` means that we would have essentially different smooth functions for each of our groups, with the reference group being urban hispanics. The statistical model for `res2` is similar to the model for `res`, being $log(\mu_{ij}) = \bf{X_{ij}}\beta + f(W_{ij}; v)+ Z_{ij}$, where we essentially have the same model except for one difference. The only notable difference between the two models, `res` and `res2`, is the addition of a term to account for over-dispersion, which is a random effect, in the form of the $Z_i$. This random effect is looks at the interaction between each of our potential groups of interest and the time at which they gave birth, since we have `random = ~(1|bygroup:timeInt)`. Otherwise, this model still has a logit link function, follows a binomial distribution and has the same covariates as previously discussed.
+
+## Part 2
+**2. Which of the two sets of results is more useful for investigating this research hypothesis?**
+
+Of the two models, I believe that the model `res2` has the more useful model result to investigate our hypothesis. This is because of a few reasons, first, of our two models, res2 is the only one that examines the interaction of the group background and time. This is useful in our investigation as we want to look at the effect that the campaign had during, before and after the election, on a specific group of people, that may be anxious of the outcome, where stress has big influence on the births, as such we would want to examine how these two covariates interact with one another. Furthermore, the second model allows us to examine more in depth, as we have more things to look at, such as the random effect plot which wouldn't have been possible in `res`. 
+
+```{r, cache=TRUE}
+lmtest::lrtest(res,res2$mer)
+
+nadiv::LRTest(logLik(res),logLik(res2$mer), boundaryCorrection = TRUE)
+```
+Moreover, if we conduct an LR test on the two models, either using the lmtest or nadiv versions, we can see that both p-values are significantly smaller than 0.05, suggesting that the more complicated model, `res2`, is better than `res` at explaining the data. Therefore, `res2` seems to be the better model results to investigate the hypotheses, as such for the follow parts 3 and 4 we will be using `res2` as our model.
+
+## Part 3
+**3. Write a short report (a paragraph or two) addressing the following hypothesis: The long-term trend in sex ratios for urban Hispanics and rural Whites is consistent with the hypothesis that discrimination against Hispanics, while present in the full range of the dataset, has been increasing in severity over time.**
+
+  To address the hypothesis that the long-term trend in sex ratios for urban Hispanics and rural Whites is consistent with the hypothesis that discrimination against Hispanics has been increasing in severity over time, we can look at a few things in our model results. First we can look at the table of estimates, we can see that for our reference group, the urban Hispanics, we have an estimate of 0.04223, with a std error of 0.00128 meaning our 95% CI doesn't contain 0, which corresponds to the intensity of male births for our reference group, centred around 1. Furthermore, we can see that for both our non-hispanic groups, we have positive estimates with std errors that suggest that the 95% CIs are non-zero. Thus, we can conclude that white individuals would see higher values for their intensity, suggesting that the ratio of males to females is higher for white individuals compared to hispanic ones, which may be contributed to the stress which results in more risks to male births lowering the number of males born thus lowering their ratio. We can also see that the rural hispanic group has a negative estimate with a std error that suggests the CI may contain 0, thus we don't have statistically significant evidence that there is a non-zero difference among hispanics no matter the urbanity, so there wouldn't be any evidence of a difference in discrimination based on urbanity.  Looking at the predicted time trends plot b from Figure 2 for our gamm model, we can see that it seems that the overall ratio for urban hispanics is indeed lower than rural non-hispanics, with very little CI overlap since 2008, and seems to perhaps be decreasing. Thus, this suggests that there has been some decrease in male births as this would mean a smaller ratio of males to females, which means that perhaps increasing discrimination is the reason for this decrease. 
+  We can next look at the scatter plots in Figure 1, we can see that there doesn't seem to be much of a difference in slopes of the regression for the ratios for any of our groups, as seen with plots b, d, f, and h. Thus, based on the ratio scatter plots there is no discernible difference between any of the years, especially those leading up to the election, and if there was increasing discrimination we would expect to see less male babies as this would cause stress to the mother, which increases risks of complication in males. Furthermore, we see an overall decrease in births in general over the decade as seen in plots a and e for all races, so we would expect to see a more significant change in ratios, as we have a smaller sample size, if there was indeed an increase in stress for hispanic mothers due to discrimination. In addition to the scatter plots one can also look at the random effect plots for `res2`, which shows that that in any group of hispanics, no matter the urbanity, the estimates lie roughly around 1, with the CI denoted by the dotted lines. Thus, we can conclude that there doesn't seem to be much difference between different groups of hispanics. Furthermore, we can see that the standard deviation for the intercept is 0.0022596, which is really close to zero, so it looks like there isn't much evidence that there is much difference between any of the groups. In the end, there is evidence for both sides of the hypothesis, with some showing that perhaps there has been increasing discrimination towards hispanics, as birth rates of males have decreased due to stress from said discrimination. However, we also see some evidence of the opposite, where the birth rates haven't changed much over time, although there is lower ratios in general for hispanics compared to non-hispanics. Thus, it seems that based on the evidence we have inconclusive evidence for the hypothesis, and perhaps we need more data or further analysis for a conclusive result.
+
+## Part 4
+**4. Write a short report addressing the following hypothesis: The election of Trump in November 2016 had a noticeable effect on the sex ratio of Hispanic-Americans roughly 5 months after the election.**
+
+To address the hypothesis that the election of Trump in November 2016 had a noticeable effect on the sex ratio of Hispanic-Americans roughly 5 months after the election, we can examine some of the same outputs as part 3, but now focusing on what happens after the vertical lines. We can see that in the scatter plots in Figure 1, there still doesn't seem to be any discernible change in the ratio plots, plots b and d, before the vertical line and after the vertical line. Thus, this suggests that there seems to be no noticeable evidence, at least based on the scatter plots of the ratios. Furthermore, there doesn't seem to be any difference to the count plots either as the cycle of births seem to still be the same or very similar when comparing the count before the line and after the line. As well if we look at the predicted time trends plot in Figure 2 for the gamm, we can see that there is no change in the slope or CI for our hispanic group line from before and after the vertical line, seemingly following the initial trajectory it was following from before. We can also see no difference in the random effect plots, suggesting that there is not any change following the 5 months after the election. Thus, overall based on all the output results, namely the plots, we can see that there doesn't seem to be any evidence that there is a noticeable effect on sex ratio of Hispanic-Americans roughly 5 months following the election.
+
+
+# Question 2 - Death
+
+```{r}
+if(!requireNamespace("nCov2019")) { 
+  devtools::install_github("GuangchuangYu/nCov2019")
+}
+x1 <- nCov2019::load_nCov2019(lang = 'en')
+hubei = x1$province[which(x1$province$province == 'Hubei'), ]
+hubei$deaths = c(0, diff(hubei$cum_dead))
+italy = x1$global[which(x1$global$country == 'Italy'), ]
+italy$deaths = c(0, diff(italy$cum_dead))
+x = list(Hubei= hubei, Italy=italy)
+for(D in names(x)) { 
+  plot(x[[D]][,c('time','deaths')], xlim = as.Date(c('2020/1/10', '2020/4/1')))
+}
+
+x$Hubei$weekday = format(x$Hubei$time, '%a')
+x$Italy$weekday = format(x$Italy$time, '%a')
+x$Italy$timeInt = as.numeric(x$Italy$time)
+x$Hubei$timeInt = as.numeric(x$Hubei$time)
+x$Italy$timeIid = x$Italy$timeInt
+x$Hubei$timeIid = x$Hubei$time
+
+gamItaly = gamm4::gamm4(deaths ~ weekday + s(timeInt, k=40), random = ~(1|timeIid),
+                        data=x$Italy, family=poisson(link='log'))
+gamHubei = gamm4::gamm4(deaths ~ weekday + s(timeInt, k=100), random = ~(1|timeIid),
+                        data=x$Hubei, family=poisson(link='log'))
+lme4::VarCorr(gamItaly$mer)
+lme4::VarCorr(gamHubei$mer)
+
+knitr::kable(cbind(summary(gamItaly$mer)$coef[,1:2], summary(gamHubei$mer)$coef[,1:2]), digits=3)
+
+toPredict = data.frame(time = seq(as.Date('2020/1/1'), as.Date('2020/4/10'), by='1 day'))
+toPredict$timeInt = as.numeric(toPredict$time)
+toPredict$weekday = 'Fri'
+Stime = pretty(toPredict$time)
+
+matplot(toPredict$time,
+        exp(do.call(cbind, mgcv::predict.gam(gamItaly$gam, toPredict, se.fit=TRUE)) %*% Pmisc::ciMat()),
+        col='black', lty=c(1,2,2), type='l', xaxt='n', xlab='', ylab='count', ylim = c(0.5, 5000),
+        xlim = as.Date(c('2020/2/20', '2020/4/5')))
+axis(1, as.numeric(Stime), format(Stime, '%d %b'))
+points(x$Italy[,c('time','deaths')], col='red')
+
+matplot(toPredict$time,
+        exp(do.call(cbind, mgcv::predict.gam(gamItaly$gam, toPredict, se.fit=TRUE)) %*% Pmisc::ciMat()),
+        col='black', lty=c(1,2,2), type='l', xaxt='n', xlab='', ylab='count', ylim = c(0.5, 5000),
+        xlim = as.Date(c('2020/2/20', '2020/4/5')), log='y')
+axis(1, as.numeric(Stime), format(Stime, '%d %b'))
+points(x$Italy[,c('time','deaths')], col='red')
+
+matplot(toPredict$time,
+        exp(do.call(cbind, mgcv::predict.gam(gamHubei$gam, toPredict, se.fit=TRUE)) %*% Pmisc::ciMat()),
+        col='black', lty=c(1,2,2), type='l', xaxt='n', xlab='', ylab='count',
+        xlim = as.Date(c('2020/1/20', '2020/4/5')))
+axis(1, as.numeric(Stime), format(Stime, '%d %b'))
+points(x$Hubei[,c('time','deaths')], col='red')
+
+matplot(toPredict$time,
+      exp(do.call(cbind, mgcv::predict.gam(gamHubei$gam, toPredict, se.fit=TRUE)) %*% Pmisc::ciMat()),
+      col='black', lty=c(1,2,2), type='l', xaxt='n', xlab='', ylab='count',
+      xlim = as.Date(c('2020/1/20', '2020/4/5')), log='y', ylim =c(0.5, 200))
+axis(1, as.numeric(Stime), format(Stime, '%d %b'))
+points(x$Hubei[,c('time','deaths')], col='red')
+
+
+```
+
+Regression table unnecessary for interpretations in part 2
+
+## Part 1
+**1. Write a down the statistical model corresponding to the gamm4 calls above, explaining in words what all of the variables are.**
+
+The statistical model corresponding to the `gamm4` calls is $log(\mu_{i}) = \bf{X_i}\beta + f(W_i)+ Z_i$. Where our response variable follows a Poisson distribution with a log link function, seen by ` family=poisson(link='log')`, and represents the number deaths that have occurred for the given area. We have a covariate, X_i, for weekday, which has 7 levels for each day of the week. The smooth function is denoted by the $f(W_i)$, where it has the covariate of timeInt, which is the number of days since a specific date. This smoothing function has 100 dimensions for Hubei and 40 for Italy, and both include a random effect (to account for overdisperion), $Z_i$, for the time, since they started counting on different dates.
+
+## Part 2
+**2. Write a paragraph describing, in non-technical terms, what information the data analysis presented here is providing. Write text suitable for a short ‘Research News’ article in a University of Toronto news publication, assuming the audience knows some basic statistics but not much about non-parametric modelling.**
+
+In the recent event regarding COVID-19 in China and Italy and analysis was done on the daily death counts of Italy and a region of China, Hubei. From that analysis we can find an output of plots shown in Figure 5, where the death counts for each area are shown in plots a and c. In all four plots one can also see the dotted lines surrounding the solid one, the dotted ones represent the range that we can reasonably expect the actual numbers fall within, while the solid line is our best estimate of the numbers. As part of these plots, one can clearly see that the counts are much higher for Italy than Hubei, in the hundreds compared to less than 200 though one is a country compared to a province of one, and we can see from that that perhaps the rate of death is much greater in one area when compared to the other. We can also see that we have an exponential increase in both areas, as the outbreak started, though we can see the Hubei plot peak, likely due to the amount of information we have since the outbreak in the area as well as how long it has been there, i.e. the exposure period. From that we can see in plots b and d, which are on the logarithmic scale, that Italy is expected to continue to exponentially increase in the number of deaths daily, while in Hubei the number has peaked and began to see less deaths. Given the exposure periods of each region, we could expect to see a similar outcome for Italy as Hubei as Italy seems to have not peaked yet and shows no signs of doing so. One can also turn their attention to the table of estimates for our two regions, with the first set of estimates and standard errors representing Italy and the second representing Hubei. These estimates are the effects that different days of the week may have on the death rates, as weekdays may be a confounder, i.e. a variable that may throw off our analysis. We can see that on most days of the week for Italy, we see positive estimates, suggesting that in all days except Sunday, we expect to see roughly the same or more deaths. We can also see that Sunday sees a negative estimate, meaning there are less deaths, however this might be due to the high number of Christians in Italy, which may not seek immediate medical attention as they are at church or at home. This explanation also explains why we see such a large an increase in the estimate for Monday when compared to the other days, as those on Sunday come in on Monday. However, it should be noted that most of these estimates have standard errors which suggest that the 95% confidence interval (CI) may contain 0, meaning that there would be no statistically significant evidence that there is any difference on any given day, except Monday. In the case of Hubei, we see negative values for most of the days, but once again if we look at the standard errors for our estimates, we can see that in most of the days we have a CI containing 0. Thus, this is further evidence that the death counts in China's Hubei province seem to be on the decline. Overall, based on our data analysis it seems that China's Hubei province has seen the worst of the outbreak pass, as death counts in the region are on the decline, while in Italy the country is still in trouble as we expect its death counts to still rise.
+
+## Part 3
+**3. Explain, for each of the tests below, whether the test is a valid LR test and give reasons for your decision.**
+
+For each of our tests, we have three things we need to consider before concluding the validity of the test, whether nesting is present between the two models, whether there are any boundary corrections needed and whether we are using REML or ML in the models. If there are problems with any one of these then one can conclude that the test is not valid for the two models. 
+
+If we look at our first model with the lmtest version of the `lrtest` on `Hubei2` and `gamHubei`, we must examine these three criterion. Of the two models we can see that the only difference between the two is the inclusion of a fixed effect for weekday, since both models are otherwise the same, we can conclude the model Hubei2 is nested within `gamHubei.` We can also see that we are testing for a difference in fixed effects not random effects, thus we have no need for any boundary corrections (i.e. the use of the nadiv version), thus that is satisfied. However, the problem encountered here is the fact that `gamHubei` has `REML=TRUE` by default, which means that no LRtests are valid for comparing the two models, as we aren't testing the significance of random effects, thus this test is not valid
+
+The next test compares the same models as the previous one, just we have applied `logLik()` to our models and are using nadiv. However, this test runs into the same problems as the first, being that REML is used for our `gamHubei` model, thus again this test would not be valid for comparing the two models.
+
+The third test uses the lmtest version on the models `Hubei3` and `gamHubei`. First looking at the REML criteria, we can see that it is indeed used here, since gamHubei is present, however since the models only differ by the presence of a random effect and thus we would only be testing the significance of it, it is possible for the LRtest to be valid here, so let's look at the other criterion. We can see that because we are testing the significance of the random effects on the models, we must account for the boundary in the LR test, thus we would need to use an LR test with boundary corrections, which is not possible with the `lmtest` version. As a result, we should instead be using the LR test from the `nadiv` package, so this test using the `lmtest` version would be invalid.
+
+The fourth test is the same as the third except just we have applied `logLik()` to our models and are using nadiv. As mentioned in the previous part, our REML criteria is satisfied, however, we also mentioned that the two models were testing random effect significance and thus would need to have a boundary correction. Since, we are now using the `nadiv` version of the LR test, we have now corrected said boundary issue and thus this criterion is now satisfied. Finally we must also look at the nesting criterion, and in this case our models only differ by a random effect, with the fixed effects being the same. Thus, it seems reasonable that the model of Hubei3 is nested in gamHubei, meaning that all three of our criteria are satisfied. Thus, this test is valid for our models.
+
+The fifth test is the lmtest version on models `Hubei4` and `gamHubei`. Once again we first look at the REML condition, although `gamHubei` has `REML=TRUE`, it shouldn't matter if this was true for this `gamm4` with Poisson family, this is because it will give the same output as our model `Hubei4` is a `glmer` model which uses ML rather than REML. Thus, our REML condition might still hold for now, so lets look at the other ones. We can see that the models should be nested as the set of basis functiosn for the smooth in gamHubei contain a linear basis, if we constrain all the coefficients for the other basis functions to 0. Thus, we would get the same linear regression as if it were a glmer, meaning our `Hubei4` is nested within `gamHubei`. However, once we get to the boundary criteria, we can see that the random effects are the same between models, but gamHubei has the added condition of a smoothing function, and since we are now testing for the significance of that we have a boundary issue. Thus, we would need a boundary correction in our LR test which is not possible in our `lmtest` version of the test, so this test isn't valid.
+
+The sixth one is the same as the fifth except we have applied `logLik()` to our models and are using nadiv. As we confirmed in the previous section that all our other criteria hold, except for the boundary correction, now that we are using the nadiv package we have solved that problem. Thus, this test is valid
+
+For the seventh test we compare Hubei2 and Hubei3 using the lmtest package. First, we aren't using REML in either models, so that issue is not present. However, we might see a problem with the nesting. We can notice that the two models differ by the addition of a random effect and absence of a fixed effect for weekday for Hubei2, while Hubei3 is missing the random effect and has an additional fixed effect. This suggests that the models are completely different and as such there is no nesting between the models. Furthermore,  the final thing we need to check is the type of significance we are checking for. Thus, the lmtest package would not be valid as we are testing for the significance of a fixed and random effect, where we would need to have a boundary correction, and our models are different.
+
+In the last test we conduct the same as the seventh but we have applied `logLik()` to our models and are using nadiv. We have the same criteria satisfied as before, REML, however we now have a problem with whether this version of the test is usable. We know that this version of the test requires us to have the "full", more complex model as the first input and the reduced as the second. However, since there is an inclusion of a random effect and absence fixed effect in Hubei2, and the opposite for Hubei3, as mentioned before, we have different models so we cannot conduct an LR test on the two.
+
+
+```{r}
+Hubei2 = gamm4::gamm4(deaths ~ 1 + s(timeInt, k=100), random = ~(1|timeIid),
+                      data=x$Hubei, family=poisson(link='log'), REML=FALSE)
+Hubei3 = mgcv::gam(deaths ~ weekday + s(timeInt, k=100),
+                   data=x$Hubei, family=poisson(link='log'), method='ML')
+Hubei4 = lme4::glmer(deaths ~ weekday + timeInt + (1|timeIid),
+                     data=x$Hubei, family=poisson(link='log'))
+
+lmtest::lrtest(Hubei2$mer, gamHubei$mer)
+nadiv::LRTest(logLik(Hubei2$mer), logLik(gamHubei$mer), boundaryCorrect=TRUE)
+
+lmtest::lrtest(Hubei3, gamHubei$mer)
+nadiv::LRTest(logLik(Hubei3), logLik(gamHubei$mer), boundaryCorrect=TRUE)
+
+lmtest::lrtest(Hubei4, gamHubei$mer)
+nadiv::LRTest(logLik(Hubei4), logLik(gamHubei$mer), boundaryCorrect=TRUE)
+
+lmtest::lrtest(Hubei2$mer, Hubei3)
+nadiv::LRTest(logLik(Hubei2$mer), logLik(Hubei3), boundaryCorrect=TRUE)
+
+```
+
+# References
+Retnakaran, Ravi and Chang Ye (2020). “Outcome of the 2016 United States presidential election and the subsequent sex ratio at birth in Canada: an ecological study”. In: BMJ Open 10.2. doi: 10.1136/bmjopen2019-031208.
+
+
+
+
+
+
+
+
